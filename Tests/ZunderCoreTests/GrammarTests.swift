@@ -129,7 +129,7 @@ final class ParserTests: XCTestCase {
 
 final class RequiredTests: XCTestCase {
   func testRequiredForcesCall() throws {
-    let kit = GrammarTests.kit!, tag = try GLM47().structuralTag(tools: tools, required: true)
+    let kit = GrammarTests.kit!, tag = try GLM47().structuralTag(tools: tools, GrammarOpts(required: true))
     func rej(_ t: String) throws -> Int? {
       let (g, _) = try kit.gate(tag: tag); defer { kit.done(g, tag: tag) }
       for (i, id) in GrammarTests.tok.encode(text: t, addSpecialTokens: false).enumerated() { if try !g.allows(id) { return i }; try g.commit(id) }

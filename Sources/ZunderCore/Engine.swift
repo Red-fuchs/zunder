@@ -32,7 +32,7 @@ public final class Engine {
   public init(spec: String, lease: GPULease? = nil) async throws {
     let dir = try resolveModel(spec)
     self.dir = dir
-    id = spec.contains("/") && !spec.hasPrefix("/") && !spec.hasPrefix("~") ? spec : dir.lastPathComponent
+    id = FileManager.default.fileExists(atPath: (spec as NSString).expandingTildeInPath) ? dir.lastPathComponent : spec
     let tok = try await loadTokenizer(dir)
     self.tok = tok
     self.lease = lease

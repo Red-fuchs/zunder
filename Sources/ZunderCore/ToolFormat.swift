@@ -9,7 +9,7 @@ public enum Event: Equatable {
 
 public protocol ToolFormat: Sendable {
   /// xgrammar structural-tag JSON: optional reasoning, free text, tool calls from `tools` (OpenAI tool objects).
-  func structuralTag(tools: [JSON], required: Bool) throws -> String
+  func structuralTag(tools: [JSON], _ o: GrammarOpts) throws -> String
   func parser(tools: [JSON]?) -> ToolStreamParser
 }
 
@@ -18,7 +18,11 @@ public protocol ToolStreamParser: AnyObject {
   func finish() -> [Event]
 }
 
-extension ToolFormat { public func structuralTag(tools: [JSON]) throws -> String { try structuralTag(tools: tools, required: false) } }
+public struct GrammarOpts {
+  public var required = false, think = true, parallel = true
+  public init(required: Bool = false, think: Bool = true, parallel: Bool = true) { self.required = required; self.think = think; self.parallel = parallel }
+}
+extension ToolFormat { public func structuralTag(tools: [JSON]) throws -> String { try structuralTag(tools: tools, GrammarOpts()) } }
 
 public func toolFormat(modelType: String) -> any ToolFormat { GLM47() }
 
@@ -28,12 +32,13 @@ public struct GLM47: ToolFormat {
   static let triggers = ["<think>", "<tool_call>"]
   public init() {}
 
-  public func structuralTag(tools: [JSON], required: Bool) throws -> String {
-    let trig = tools.isEmpty ? ["<think>"] : Self.triggers
+  public func structuralTag(tools: [JSON], _ o: GrammarOpts) throws -> String {
+    let withThink = o.think, required = o.required
+    let trig = Self.triggers.filter { ($0 == "<think>" && withThink) || ($0 == "<tool_call>" && !tools.isEmpty) }
     let free = Self.markers.filter { !trig.contains($0) }
     let think: JSON = ["type": "tag", "begin": "<think>", "end": "</think>",
       "content": ["type": "any_text", "excludes": Self.markers.filter { $0 != "</think>" }] as JSON]
-    var tags: [JSON] = [think]
+    var tags: [JSON] = withThink ? [think] : []
     for t in tools {
       guard let f = t["function"] as? JSON ?? (t["name"] != nil ? t : nil), let name = f["name"] as? String else { throw ZError("tool without name") }
       let ps = f["parameters"] as? JSON ?? ["type": "object", "properties": JSON()]
@@ -41,9 +46,9 @@ public struct GLM47: ToolFormat {
       tags.append(["type": "tag", "begin": "<tool_call>" + name, "end": "</tool_call>", "content": body(ps)])
     }
     var fmt: JSON = ["type": "triggered_tags", "triggers": trig, "tags": tags, "excludes": free]
-    if required && tags.count > 1 {   // optional think block, then one or more calls, no free text
-      let calls: JSON = ["type": "tags_with_separator", "tags": Array(tags.dropFirst()), "separator": "", "at_least_one": true]
-      fmt = ["type": "or", "elements": [["type": "sequence", "elements": [think, calls]] as JSON, calls]]
+    if required && !tools.isEmpty {   // optional think block, then one or more calls, no free text
+      let calls: JSON = ["type": "tags_with_separator", "tags": Array(tags.suffix(tools.count)), "separator": "", "at_least_one": true, "stop_after_first": !o.parallel]
+      fmt = withThink ? ["type": "or", "elements": [["type": "sequence", "elements": [think, calls]] as JSON, calls]] : calls
     }
     let data = try JSONSerialization.data(withJSONObject: ["type": "structural_tag", "format": fmt] as JSON, options: [.withoutEscapingSlashes])
     return String(decoding: data, as: UTF8.self)
