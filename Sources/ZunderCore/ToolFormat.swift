@@ -54,16 +54,17 @@ public struct GLM47: ToolFormat {
     return String(decoding: data, as: UTF8.self)
   }
 
-  /// `<arg_key>k</arg_key><arg_value>v</arg_value>` per property: required ones in `required` order, optional ones as an unordered loop.
+  /// Property order is sorted: swift-jinja renders the prompt's tool JSON with sorted keys, so the grammar uses the same order.
+  /// `<arg_key>k</arg_key><arg_value>v</arg_value>` per property: required ones in sequence, optional ones as an unordered loop (duplicates are dropped by the parser).
   func body(_ ps: JSON) -> JSON {
     let props = ps["properties"] as? JSON ?? [:]
-    let req = (ps["required"] as? [String] ?? []).filter { props[$0] != nil }
+    let req = (ps["required"] as? [String] ?? []).filter { props[$0] != nil }.sorted()
     let opt = props.keys.filter { !req.contains($0) }.sorted()
     func arg(_ k: String) -> JSON {
       let sch = props[k] as? JSON ?? [:]
       let content: JSON
-      if let e = sch["enum"] as? [String], !e.isEmpty { content = ["type": "or", "elements": e.map { ["type": "const_string", "value": $0] as JSON }] }   // raw (unquoted) string values
-      else if sch["type"] as? String == "string" { content = ["type": "any_text", "excludes": Self.markers.filter { $0 != "</arg_value>" }] }
+      if let e = sch["enum"] as? [String], !e.isEmpty { content = ["type": "or", "elements": e.map(lit)] }   // raw (unquoted) string values
+      else if Self.stringish(sch) { content = ["type": "any_text", "excludes": Self.markers.filter { $0 != "</arg_value>" }] }
       else { content = ["type": "json_schema", "json_schema": sch] }
       return ["type": "tag", "begin": "<arg_key>\(k)</arg_key><arg_value>", "end": "</arg_value>", "content": content]
     }
@@ -71,6 +72,21 @@ public struct GLM47: ToolFormat {
     if !opt.isEmpty { els.append(["type": "tags_with_separator", "tags": opt.map(arg), "separator": ""]) }
     if els.isEmpty { return ["type": "any_text", "excludes": Self.markers] }
     return els.count == 1 ? els[0] : ["type": "sequence", "elements": els]
+  }
+
+  /// xgrammar 0.1.30 compiles 2-byte UTF-8 in const_string to wrong bytes -> non-ASCII literals go through regex.
+  func lit(_ v: String) -> JSON {
+    v.unicodeScalars.contains { $0.value > 127 }
+      ? ["type": "regex", "pattern": v.map { "\\^$.|?*+()[]{}".contains($0) ? "\\\($0)" : String($0) }.joined()]
+      : ["type": "const_string", "value": v]
+  }
+
+  /// Values the model writes raw (unquoted): any schema whose type set includes string, an untyped one, or anyOf/oneOf containing such.
+  static func stringish(_ sch: JSON) -> Bool {
+    if let t = sch["type"] as? String { return t == "string" }
+    if let t = sch["type"] as? [String] { return t.contains("string") }
+    for k in ["anyOf", "oneOf"] { if let alts = sch[k] as? [JSON] { return alts.contains { stringish($0) } } }
+    return sch["enum"] == nil && sch["const"] == nil && sch["$ref"] == nil
   }
 
   public func parser(tools: [JSON]?) -> ToolStreamParser { GLMParser(tools: tools) }
@@ -114,24 +130,28 @@ final class GLMParser: ToolStreamParser {
     guard !truncated, let k = s.range(of: "<arg_key>") ?? (s.contains("<") ? nil : s.endIndex ..< s.endIndex) else { return [.content(raw)] }
     let name = s[..<k.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
     guard !name.isEmpty else { return [.content(raw)] }
-    var parts: [String] = [], rest = s[k.lowerBound...]
-    while let a = rest.range(of: "<arg_key>"), let b = rest.range(of: "</arg_key>"), let c = rest.range(of: "<arg_value>"), let d = rest.range(of: "</arg_value>") {
+    var keys: [String] = [], vals: [String: String] = [:], rest = s[k.lowerBound...]
+    while let a = rest.range(of: "<arg_key>"), let b = rest.range(of: "</arg_key>", range: a.upperBound ..< rest.endIndex),
+      let c = rest.range(of: "<arg_value>", range: b.upperBound ..< rest.endIndex), let d = rest.range(of: "</arg_value>", range: c.upperBound ..< rest.endIndex) {
       let key = rest[a.upperBound ..< b.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
-      let val = rest[c.upperBound ..< d.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
-      let isStr = schemaType(name, key) == "string"
-      let lit = !isStr && (try? JSONSerialization.jsonObject(with: Data(val.utf8), options: .fragmentsAllowed)) != nil ? val : jsonStr(val)
-      parts.append(jsonStr(key) + ":" + lit)
+      let raw = String(rest[c.upperBound ..< d.lowerBound])
+      let lit: String
+      if isStringy(name, key) { lit = jsonStr(raw) }   // strings are byte-exact
+      else { let v = raw.trimmingCharacters(in: .whitespacesAndNewlines); lit = (try? JSONSerialization.jsonObject(with: Data(v.utf8), options: .fragmentsAllowed)) != nil ? v : jsonStr(v) }
+      if vals[key] == nil { keys.append(key) }
+      vals[key] = lit   // duplicate keys: last wins
       rest = rest[d.upperBound...]
     }
-    return [.call(name: name, args: "{" + parts.joined(separator: ",") + "}")]
+    return [.call(name: name, args: "{" + keys.map { jsonStr($0) + ":" + vals[$0]! }.joined(separator: ",") + "}")]
   }
 
-  func schemaType(_ fn: String, _ arg: String) -> String? {
+  /// string-ish per schema; unknown tool/arg -> JSON-parse attempt
+  func isStringy(_ fn: String, _ arg: String) -> Bool {
     for t in tools ?? [] {
       let f = t["function"] as? JSON ?? t
-      if f["name"] as? String == fn, let p = (f["parameters"] as? JSON)?["properties"] as? JSON { return (p[arg] as? JSON)?["type"] as? String }
+      if f["name"] as? String == fn, let p = (f["parameters"] as? JSON)?["properties"] as? JSON, let sch = p[arg] as? JSON { return GLM47.stringish(sch) }
     }
-    return nil
+    return false
   }
 }
 

@@ -4,6 +4,20 @@ import Network
 public func jdump(_ o: Any) -> Data { (try? JSONSerialization.data(withJSONObject: o, options: [.withoutEscapingSlashes])) ?? Data("{}".utf8) }
 
 /// OpenAI-compatible server, 127.0.0.1 only, one generation at a time.
+/// Decodes a complete chunked body; nil while incomplete.
+func dechunk(_ d: Data) -> Data? {
+  var out = Data(), i = d.startIndex
+  while true {
+    guard let r = d.range(of: Data("\r\n".utf8), in: i ..< d.endIndex) else { return nil }
+    let size = String(decoding: d[i ..< r.lowerBound], as: UTF8.self).split(separator: ";").first.flatMap { Int($0.trimmingCharacters(in: .whitespaces), radix: 16) }
+    guard let n = size else { return nil }
+    i = r.upperBound
+    if n == 0 { return out }
+    guard d.endIndex - i >= n + 2 else { return nil }
+    out += d[i ..< i + n]; i += n + 2
+  }
+}
+
 public final class Server {
   let eng: Engine, port: UInt16, idle: TimeInterval
   public let q = DispatchQueue(label: "zunder.gen")
@@ -27,16 +41,24 @@ public final class Server {
     let l = try NWListener(using: params)
     l.newConnectionHandler = { [self] c in
       c.start(queue: .global())
-      var buf = Data()
+      var buf = Data(), cont = false
       func recv() {
         c.receive(minimumIncompleteLength: 1, maximumLength: 1 << 20) { d, _, done, e in
           if let d { buf.append(d) }
           if let r = buf.range(of: Data("\r\n\r\n".utf8)) {
             let head = String(decoding: buf[..<r.lowerBound], as: UTF8.self)
-            let len = max(0, Int(self.hdr(head, "content-length") ?? "") ?? 0)
-            if len > 64 << 20 { return self.reply(c, 413, ["error": ["message": "payload too large"]]) }
-            if buf.count - r.upperBound < len { if !done && e == nil { recv() } else { c.cancel() }; return }
-            self.handle(c, head, Data(buf[r.upperBound ..< (r.upperBound + len)]))
+            let rest = Data(buf[r.upperBound...])
+            var body: Data?
+            if self.hdr(head, "transfer-encoding")?.lowercased().contains("chunked") == true { body = dechunk(rest) }
+            else {
+              let len = max(0, Int(self.hdr(head, "content-length") ?? "") ?? 0)
+              if len > 64 << 20 { return self.reply(c, 413, ["error": ["message": "payload too large"]]) }
+              if rest.count >= len { body = rest.prefix(len) }
+            }
+            if buf.count > 64 << 20 { return self.reply(c, 413, ["error": ["message": "payload too large"]]) }
+            if let body { return self.handle(c, head, Data(body)) }
+            if !cont, self.hdr(head, "expect")?.lowercased() == "100-continue" { cont = true; c.send(content: Data("HTTP/1.1 100 Continue\r\n\r\n".utf8), completion: .idempotent) }
+            if !done && e == nil { recv() } else { c.cancel() }
           } else if !done && e == nil { recv() } else { c.cancel() }
         }
       }
@@ -47,7 +69,7 @@ public final class Server {
     while true {
       try await Task.sleep(nanoseconds: 5_000_000_000)
       let b = isBusy()
-      if !b, eng.loaded, Date().timeIntervalSince(eng.lastUse) > idle { q.async { if Date().timeIntervalSince(self.eng.lastUse) > self.idle { self.eng.unload() } } }
+      if !b, eng.loaded, Date().timeIntervalSince(eng.lastUse) > idle { q.async { if !self.isBusy(), Date().timeIntervalSince(self.eng.lastUse) > self.idle { self.eng.unload() } } }
     }
   }
 
@@ -108,10 +130,13 @@ public final class Server {
     let stream = req["stream"] as? Bool ?? false
     let id = "chatcmpl-" + UUID().uuidString.prefix(12).lowercased()
     let model = req["model"] as? String ?? eng.id
+    nonisolated(unsafe) var headersSent = false
     func fail(_ code: Int, _ msg: String) {
       eng.log("error: \(msg)")
-      if stream { c.send(content: Data("data: \(String(decoding: jdump(["error": ["message": msg]]), as: UTF8.self))\n\n".utf8), completion: .contentProcessed { _ in c.cancel() }) }
-      else { reply(c, code, ["error": ["message": msg]]) }
+      if stream && headersSent {   // in-stream error, still terminated properly
+        let d = Data("data: ".utf8) + jdump(["error": ["message": msg]]) + Data("\n\ndata: [DONE]\n\n".utf8)
+        c.send(content: d, contentContext: .defaultMessage, isComplete: true, completion: .contentProcessed { _ in c.cancel() })
+      } else { reply(c, code, ["error": ["message": msg]]) }
     }
     do {
       var tools = (req["tools"] as? [JSON]) ?? []
@@ -148,7 +173,7 @@ public final class Server {
       func emit(_ evs: [Event]) {
         for e in evs {
           switch e {
-          case .reasoning(let s): reasoning += s; if stream { c.send(content: chunk(["reasoning_content": s]), completion: .idempotent) }
+          case .reasoning(let s): reasoning += s; if stream { c.send(content: chunk(["reasoning_content": s, "reasoning": s]), completion: .idempotent) }
           case .content(let s): content += s; if stream { c.send(content: chunk(["content": s]), completion: .idempotent) }
           case .call(let name, let args):
             let tc: JSON = ["id": "call_" + UUID().uuidString.prefix(8).lowercased(), "type": "function", "function": ["name": name, "arguments": args] as JSON]
@@ -159,6 +184,7 @@ public final class Server {
         }
       }
       if stream {
+        headersSent = true
         let h = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n"
         c.send(content: Data(h.utf8) + chunk(["role": "assistant", "content": ""]), completion: .idempotent)
       }
@@ -179,7 +205,7 @@ public final class Server {
         c.send(content: tail, contentContext: .defaultMessage, isComplete: true, completion: .contentProcessed { _ in c.cancel() })
       } else {
         var msg: JSON = ["role": "assistant", "content": content.isEmpty && !toolCalls.isEmpty ? NSNull() : content]
-        if !reasoning.isEmpty { msg["reasoning_content"] = reasoning }
+        if !reasoning.isEmpty { msg["reasoning_content"] = reasoning; msg["reasoning"] = reasoning }
         if !toolCalls.isEmpty { msg["tool_calls"] = toolCalls }
         reply(c, 200, ["id": id, "object": "chat.completion", "created": created, "model": model,
           "choices": [["index": 0, "message": msg, "finish_reason": finish] as JSON], "usage": usage,

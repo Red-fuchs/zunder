@@ -42,7 +42,15 @@ public func resolveModel(_ spec: String) throws -> URL {
 
 public func loadContext(_ dir: URL) async throws -> ModelContext {
   await registerFlint()
-  return try await LLMModelFactory.shared.load(from: dir, using: TokLoader())
+  // mlx-swift-lm applies one global (bits, group) to every module with .scales; mixed checkpoints (flint-int4: 8-bit embeddings) need per-tensor bits
+  let data = try Data(contentsOf: dir.appendingPathComponent("config.json"))
+  let base = try JSONDecoder.json5().decode(BaseConfiguration.self, from: data)
+  guard let pl = base.perLayerQuantization, let inferred = try inferQuantization(dir: dir, base: pl) else {
+    return try await LLMModelFactory.shared.load(from: dir, using: TokLoader())
+  }
+  let model = try await LLMTypeRegistry.shared.createModel(configuration: data, modelType: base.modelType)
+  try await loadWeights(modelDirectory: dir, model: model, perLayerQuantization: inferred)
+  return ModelContext(configuration: ModelConfiguration(directory: dir), model: model, processor: NoProcessor(), tokenizer: try await loadTokenizer(dir))
 }
 
 public func loadTokenizer(_ dir: URL) async throws -> any MLXLMCommon.Tokenizer { try await TokLoader().load(from: dir) }

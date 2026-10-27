@@ -203,10 +203,8 @@ public class FlintModel: Module, LLMModel {
     for l in 0 ..< cfg.layers where !cfg.mlpOnlyLayers.contains(l) {
       let p = "model.layers.\(l).mlp"
       for n in ["up_proj", "down_proj", "gate_proj"] where w["\(p).experts.0.\(n).weight"] != nil {
-        // quantised checkpoints also carry .scales/.biases per expert
-        for s in ["weight", "scales", "biases"] where w["\(p).experts.0.\(n).\(s)"] != nil {
-          w["\(p).switch_mlp.\(n).\(s)"] = MLX.stacked((0 ..< cfg.experts).map { w.removeValue(forKey: "\(p).experts.\($0).\(n).\(s)")! })
-        }
+        // like flint.py, only .weight is stacked: quantised checkpoints ship switch_mlp.* already
+        w["\(p).switch_mlp.\(n).weight"] = MLX.stacked((0 ..< cfg.experts).map { w.removeValue(forKey: "\(p).experts.\($0).\(n).weight")! })
       }
     }
     return w

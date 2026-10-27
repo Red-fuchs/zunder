@@ -26,7 +26,7 @@ public final class GrammarKit {
     return (c, Date().timeIntervalSince(t))
   }
   public func release(_ c: GrammarConstraint, tag: String, committed: Int) {
-    if committed > 0 { do { try c.rollback(Int32(committed)) } catch { return } }
+    if committed > 0 { do { try c.rollback(Int32(committed)) } catch { FileHandle.standardError.write(Data("grammar rollback failed (matcher dropped): \(error)\n".utf8)); return } }
     cache[tag] = c
   }
   public func clear() { cache = [:] }
@@ -47,6 +47,7 @@ public final class Gate {
     if !m.needsApply { return logits }
     var w = m.mask
     let e = kit.eos
+    if !w.contains(where: { $0 != 0 }) { throw ZError("grammar dead end: no token allowed") }
     if (w[e >> 5] >> Int32(e & 31)) & 1 == 1 { for s in kit.stop { w[s >> 5] |= Int32(truncatingIfNeeded: 1 << (s & 31)) } }
     let bits = ((MLXArray(w)[0..., .newAxis] >> shifts) & 1).flattened()[..<logits.dim(-1)]
     return which(bits .== 1, logits, MLXArray(-Float.infinity))

@@ -64,8 +64,7 @@ public final class Engine {
     let sem = DispatchSemaphore(value: 0)
     Task { do { res = .success(try await loadContext(d)) } catch { res = .failure(error) }; sem.signal() }
     sem.wait()
-    do { ctx = try res.get() } catch { lease?.release(); throw error }
-    kit = try GrammarKit(tok: tok, eos: eos, stop: stop)
+    do { let c = try res.get(); kit = try GrammarKit(tok: tok, eos: eos, stop: stop); ctx = c } catch { kit = nil; lease?.release(); throw error }
     log(String(format: "model loaded %@ (%.1f s)", id, Date().timeIntervalSince(t)))
     lastUse = Date()
   }
