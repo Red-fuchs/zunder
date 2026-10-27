@@ -1,0 +1,7 @@
+zunder
+======
+Grammar construction (structural tag layout: optional reasoning block, free text excluding protocol markers,
+tool-call tags) is ported from recursive-oss/rec, engine/src/rec_mlx/grammar_builder.py
+(https://github.com/recursive-oss/rec), licensed under the Apache License 2.0.
+
+Sources/ZunderCore/Flint.swift is a port of mlx_lm/models/flint.py from ml-explore/mlx-lm (MIT, Copyright Apple Inc.).
