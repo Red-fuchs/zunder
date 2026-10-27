@@ -140,3 +140,49 @@ final class RequiredTests: XCTestCase {
     XCTAssertNotNil(try rej("Hallo, kein Aufruf"))
   }
 }
+
+final class SchemaTests: XCTestCase {
+  let tl: [JSON] = [["type": "function", "function": ["name": "edit", "parameters": [
+    "type": "object",
+    "properties": [
+      "path": ["type": ["string", "null"]], "old": ["anyOf": [["type": "integer"], ["type": "string"]]], "any": [:] as JSON,
+      "mode": ["type": "string", "enum": ["größe", "b"]], "n": ["type": "integer"], "flag": ["type": "boolean"],
+    ] as JSON, "required": ["path", "old", "any", "mode"]] as JSON] as JSON]]
+
+  func reject(_ t: String) throws -> Int? {
+    let kit = GrammarTests.kit!, tag = try GLM47().structuralTag(tools: tl)
+    let (g, _) = try kit.gate(tag: tag); defer { kit.done(g, tag: tag) }
+    for (i, id) in GrammarTests.tok.encode(text: t, addSpecialTokens: false).enumerated() { if try !g.allows(id) { return i }; try g.commit(id) }
+    return nil
+  }
+  func call(_ args: String) -> String { "<tool_call>edit" + args + "</tool_call>" }
+  func a(_ k: String, _ v: String) -> String { "<arg_key>\(k)</arg_key><arg_value>\(v)</arg_value>" }
+
+  func testStringishTypesTakeRawText() throws {
+    // sorted order: any, mode, old, path (required), then optional
+    let ok = call(a("any", "she said \"hi\"\n  x") + a("mode", "größe") + a("old", "foo bar") + a("path", "src/ä.swift") + a("n", "3") + a("flag", "true"))
+    XCTAssertNil(try reject(ok))
+  }
+  func testNonStringStillJSON() throws {
+    XCTAssertNotNil(try reject(call(a("any", "x") + a("mode", "b") + a("old", "y") + a("path", "p") + a("n", "\"three\""))))
+    XCTAssertNotNil(try reject(call(a("any", "x") + a("mode", "nope"))))
+  }
+  func testParserKeepsStringsExactAndLastDuplicateWins() {
+    let p = GLM47().parser(tools: tl)
+    let txt = call(a("path", "  keep\n  ") + a("old", " 7 ") + a("any", "\tx") + a("n", " 5 ") + a("n", "6"))
+    let ev = p.feed(txt) + p.finish()
+    guard case .call(_, let args)? = ev.first else { return XCTFail("\(ev)") }
+    let o = try! JSONSerialization.jsonObject(with: Data(args.utf8)) as! JSON
+    XCTAssertEqual(o["path"] as? String, "  keep\n  ")
+    XCTAssertEqual(o["old"] as? String, " 7 ")
+    XCTAssertEqual(o["any"] as? String, "\tx")
+    XCTAssertEqual(o["n"] as? Int, 6)
+  }
+  func testArgsParsedSequentially() {
+    // a value that contains the closing tag text of a later arg must not confuse pairing
+    let p = GLM47().parser(tools: tl)
+    let ev = p.feed(call(a("path", "a") + a("old", "b"))) + p.finish()
+    guard case .call(_, let args)? = ev.first else { return XCTFail() }
+    XCTAssertEqual(args, #"{"path":"a","old":"b"}"#)
+  }
+}

@@ -30,4 +30,12 @@ for l in sys.stdin:
     d=json.loads(l[6:]); c=d["choices"][0]
     calls+=c["delta"].get("tool_calls",[]); fin=c["finish_reason"] or fin
 print(calls, fin); assert calls and fin=="tool_calls"; print("OK stream tool call")'
+echo "--- errors before headers are proper HTTP errors (stream + non-stream)"
+BAD='{"messages":[{"role":"user","content":"x"}],"stream":STREAM,"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"array"}}}]}'
+for st in true false; do
+  code=$(curl -s -o /tmp/claude-501/zunder-bad.out -w '%{http_code}' $B/v1/chat/completions -H 'content-type: application/json' -d "$(echo "$BAD" | sed "s/STREAM/$st/")")
+  echo "stream=$st -> HTTP $code $(head -c 120 /tmp/claude-501/zunder-bad.out)"; [ "$code" = 500 ]
+done
+echo "--- chunked body + Expect: 100-continue"
+printf '%s' '{"messages":[{"role":"user","content":"hi"}],"max_tokens":3}' | curl -sf $B/v1/chat/completions -H 'content-type: application/json' -H 'Transfer-Encoding: chunked' -H 'Expect: 100-continue' -d @- | head -c 80; echo
 tail -n 4 ~/.local/state/zunder/zunder.log
