@@ -63,8 +63,9 @@ case "serve":
   var sigs: [DispatchSourceSignal] = []
   for s in [SIGTERM, SIGINT] {
     signal(s, SIG_IGN)
-    let src = DispatchSource.makeSignalSource(signal: s, queue: srv.q)
-    src.setEventHandler { eng.unload(); try? FileManager.default.removeItem(at: pidFile); exit(0) }   // releases the gpu-run lease
+    // own queue: srv.q may be blocked waiting for a gpu-run slot or inside a generation
+    let src = DispatchSource.makeSignalSource(signal: s, queue: .global())
+    src.setEventHandler { eng.lease?.release(); try? FileManager.default.removeItem(at: pidFile); exit(0) }   // frees the gpu-run slot; process exit frees the weights
     src.resume(); sigs.append(src)
   }
   if flag("--preload") { srv.q.async { do { try eng.ensureLoaded() } catch { eng.log("preload failed: \(error)") } } }
