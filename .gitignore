@@ -3,3 +3,4 @@ fixtures/
 ref/out/
 *.log
 .DS_Store
+ref/bst.py
