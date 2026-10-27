@@ -126,3 +126,17 @@ final class ParserTests: XCTestCase {
       [.content("Hallo"), .call(name: "add", args: #"{"a":2,"b":3}"#)])
   }
 }
+
+final class RequiredTests: XCTestCase {
+  func testRequiredForcesCall() throws {
+    let kit = GrammarTests.kit!, tag = try GLM47().structuralTag(tools: tools, required: true)
+    func rej(_ t: String) throws -> Int? {
+      let (g, _) = try kit.gate(tag: tag); defer { kit.done(g, tag: tag) }
+      for (i, id) in GrammarTests.tok.encode(text: t, addSpecialTokens: false).enumerated() { if try !g.allows(id) { return i }; try g.commit(id) }
+      return nil
+    }
+    XCTAssertNil(try rej("<think>ok</think><tool_call>add<arg_key>a</arg_key><arg_value>1</arg_value><arg_key>b</arg_key><arg_value>2</arg_value></tool_call>"))
+    XCTAssertNil(try rej("<tool_call>get_weather<arg_key>city</arg_key><arg_value>Bonn</arg_value></tool_call>"))
+    XCTAssertNotNil(try rej("Hallo, kein Aufruf"))
+  }
+}

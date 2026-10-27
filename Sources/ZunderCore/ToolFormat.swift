@@ -9,7 +9,7 @@ public enum Event: Equatable {
 
 public protocol ToolFormat: Sendable {
   /// xgrammar structural-tag JSON: optional reasoning, free text, tool calls from `tools` (OpenAI tool objects).
-  func structuralTag(tools: [JSON]) throws -> String
+  func structuralTag(tools: [JSON], required: Bool) throws -> String
   func parser(tools: [JSON]?) -> ToolStreamParser
 }
 
@@ -17,6 +17,8 @@ public protocol ToolStreamParser: AnyObject {
   func feed(_ s: String) -> [Event]
   func finish() -> [Event]
 }
+
+extension ToolFormat { public func structuralTag(tools: [JSON]) throws -> String { try structuralTag(tools: tools, required: false) } }
 
 public func toolFormat(modelType: String) -> any ToolFormat { GLM47() }
 
@@ -26,7 +28,7 @@ public struct GLM47: ToolFormat {
   static let triggers = ["<think>", "<tool_call>"]
   public init() {}
 
-  public func structuralTag(tools: [JSON]) throws -> String {
+  public func structuralTag(tools: [JSON], required: Bool) throws -> String {
     let trig = tools.isEmpty ? ["<think>"] : Self.triggers
     let free = Self.markers.filter { !trig.contains($0) }
     let think: JSON = ["type": "tag", "begin": "<think>", "end": "</think>",
@@ -38,7 +40,11 @@ public struct GLM47: ToolFormat {
       guard ps["type"] as? String ?? "object" == "object" else { throw ZError("tool \(name): parameters must be an object schema") }
       tags.append(["type": "tag", "begin": "<tool_call>" + name, "end": "</tool_call>", "content": body(ps)])
     }
-    let fmt: JSON = ["type": "triggered_tags", "triggers": trig, "tags": tags, "excludes": free]
+    var fmt: JSON = ["type": "triggered_tags", "triggers": trig, "tags": tags, "excludes": free]
+    if required && tags.count > 1 {   // optional think block, then one or more calls, no free text
+      let calls: JSON = ["type": "tags_with_separator", "tags": Array(tags.dropFirst()), "separator": "", "at_least_one": true]
+      fmt = ["type": "or", "elements": [["type": "sequence", "elements": [think, calls]] as JSON, calls]]
+    }
     let data = try JSONSerialization.data(withJSONObject: ["type": "structural_tag", "format": fmt] as JSON, options: [.withoutEscapingSlashes])
     return String(decoding: data, as: UTF8.self)
   }
