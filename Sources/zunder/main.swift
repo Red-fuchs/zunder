@@ -104,7 +104,8 @@ case "bench":
   let text = String(repeating: "The quick brown fox jumps over the lazy dog. ", count: nPrompt / 8 + 1)
   let ids = Array(eng.tok.encode(text: text, addSpecialTokens: false).prefix(nPrompt))
   let tool: JSON = ["type": "function", "function": ["name": "set_mode", "parameters": ["type": "object", "properties": ["mode": ["type": "string", "enum": ["a", "b"]]], "required": ["mode"]] as JSON] as JSON]
-  let free = try eng.generate(ids: ids, tag: nil, params: SampleParams(), maxTokens: nGen) { _ in true }
+  _ = try eng.generate(ids: Array(ids.prefix(64)), tag: nil, params: SampleParams(temp: 0), maxTokens: 8) { _ in true }   // warm kernels
+  let free = try eng.generate(ids: ids, tag: nil, params: SampleParams(temp: 0), maxTokens: nGen) { _ in true }
   print("unconstrained: " + free.stats.line)
   let tag = try eng.fmt.structuralTag(tools: [tool], GrammarOpts(required: true, think: false, parallel: false))
   _ = try eng.generate(ids: ids, tag: tag, params: SampleParams(), maxTokens: 4) { _ in true }   // warm the compile cache
