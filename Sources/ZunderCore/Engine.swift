@@ -21,6 +21,8 @@ public final class Engine {
   public let fmt: any ToolFormat
   public let modelType: String
   public var lease: GPULease?
+  /// Parity tracing: called with top-8 (ids, raw logits) of every step.
+  public var trace: (([Int], [Float]) -> Void)?
   public var log: (String) -> Void = { FileHandle.standardError.write(Data(($0 + "\n").utf8)) }
   public private(set) var lastUse = Date()
   var ctx: ModelContext?
@@ -108,6 +110,7 @@ public final class Engine {
     let t1 = Date()
     func step(_ l: MLXArray) throws -> MLXArray {
       var l = l[0, -1, 0...]
+      if let trace { let i = argSort(-l.asType(.float32), axis: -1)[..<8]; let v = takeAlong(l.asType(.float32), i, axis: -1); trace(i.asArray(Int.self), v.asArray(Float.self)) }
       if let gate { l = try gate.apply(l) }
       return sample(l, params)
     }

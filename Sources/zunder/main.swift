@@ -110,5 +110,22 @@ case "bench":
   _ = try eng.generate(ids: ids, tag: tag, params: SampleParams(), maxTokens: 4) { _ in true }   // warm the compile cache
   let g = try eng.generate(ids: ids, tag: tag, params: SampleParams(), maxTokens: nGen) { _ in true }
   print("grammar:       " + g.stats.line)
+case "gen":   // greedy parity dump: --prompts file.json (list of strings) --tokens N --out file.json
+  let eng = try await makeEngine()
+  let n = Int(opt("--tokens") ?? "") ?? 32
+  guard let pf = opt("--prompts"), let po = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: pf)))  as? [String] else { die("--prompts file.json (list of strings)") }
+  try eng.ensureLoaded()
+  defer { eng.unload() }
+  var res: [[String: Any]] = []
+  for p in po {
+    let ids = try eng.prompt(messages: [["role": "user", "content": p]], tools: nil)
+    var tr: [[String: Any]] = []
+    eng.trace = { tr.append(["ids": $0, "logits": $1]) }
+    let o = try eng.generate(ids: ids, tag: nil, params: SampleParams(temp: 0), maxTokens: n) { _ in true }
+    eng.trace = nil
+    res.append(["prompt": p, "prompt_ids": ids, "tokens": o.tokens, "top8": tr, "stats": o.stats.line])
+    print(o.stats.line)
+  }
+  try JSONSerialization.data(withJSONObject: res).write(to: URL(fileURLWithPath: opt("--out") ?? "gen.json"))
 default: print(usage)
 }
