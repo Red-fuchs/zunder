@@ -10,7 +10,7 @@ tp=snapshot_download("RecursiveSI/flint-int4")
 model,tok=M.load(tp); K.enable_small_m(os.environ.get('SMALLM','1')=='1',model)
 if os.environ.get('PACK')=='1':
   sys.path.insert(0,os.path.expanduser('~/Projects/zunder/ref'));from kern import mtplx_pack;print('packed',mtplx_pack.pack(model))
-draft=M.load_draft("incoai/Flint-DFlash2").bind(model)
+draft=M.load_draft(os.environ.get("DRAFT","incoai/Flint-DFlash2")).bind(model)
 P=["Write a Python function that checks if a number is prime, with docstring and tests.",
 "Solve step by step: a train travels 120 km in 1.5 hours, then 80 km in 1 hour. What is its average speed?",
 "Explain how a hash map handles collisions, in about 150 words.",
@@ -82,4 +82,11 @@ if os.environ.get('CHECK'):
     m=min(len(ref),len(toks));fd=next((i for i in range(m) if ref[i]!=toks[i]),-1);print("MATCH" if fd<0 else "DIFF",p[:20],"first_diff",fd,"/",m,flush=True)
 for p in dict.fromkeys(r[0] for r in res):
   rs=[r for r in res if r[0]==p]
-  print(MODE,"bs",BS,p,"steps",rs[0][1],"tps %.1f ms/step %.1f"%(S.median(r[2] for r in rs),S.median(r[3] for r in rs)))
+  print(MODE,"bs",BS,p,"steps",rs[0][1],"tps %.1f ms/step %.1f acc/step %.2f"%(S.median(r[2] for r in rs),S.median(r[3] for r in rs),N/rs[0][1]))
+
+if os.environ.get('DPROF'):
+  dc=make_prompt_cache(draft);h=mx.random.normal((1,3,5*2048)).astype(mx.bfloat16);blk=mx.array([[1]+[mask_id]*4]);ts=[]
+  for i in range(40):
+    t=time.perf_counter();dt,_,_=draft.propose(blk,h,dc,0.0,logits_start=1);mx.eval(dt);ts.append((time.perf_counter()-t)*1000)
+    M._trim_recent_cache(dc,3+5)
+  print("draft ms median %.1f min %.1f"%(S.median(ts[5:]),min(ts)))
