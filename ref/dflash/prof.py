@@ -6,7 +6,9 @@ from huggingface_hub import snapshot_download
 sys.path.append(os.path.expanduser('~/.venvs/locals-bench/lib/python3.12/site-packages'))
 from locals import kernels as K
 tp=snapshot_download("RecursiveSI/flint-int4")
-model,tok=M.load(tp); K.enable_small_m(True,model)
+model,tok=M.load(tp); K.enable_small_m(os.environ.get('SMALLM','1')=='1',model)
+if os.environ.get('PACK')=='1':
+  sys.path.insert(0,os.path.expanduser('~/Projects/zunder/ref'));from kern import mtplx_pack;print('packed',mtplx_pack.pack(model))
 draft=M.load_draft("incoai/Flint-DFlash2").bind(model)
 from mlx_lm.models.cache import make_prompt_cache
 p="Write a Python function that checks if a number is prime, with docstring and tests."
