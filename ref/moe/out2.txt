@@ -1,0 +1,60 @@
+[transformers] The tokenizer you are loading from '/Users/redfuchs/.cache/huggingface/hub/models--RecursiveSI--flint-int4/snapshots/3b93f9053b530488405ae9fca51d4900d6ce21f0' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+moe layers 47
+QuantizedSwitchLinear (256, 512, 256) (256, 512, 32) 64 4
+stock     6.175 ms/47 layers  (131 us/layer, 81 GB/s) allclose=True bitexact=True
+rep2      13.807 ms/47 layers  (294 us/layer, 36 GB/s) allclose=True bitexact=True
+rep4      25.727 ms/47 layers  (547 us/layer, 19 GB/s) allclose=True bitexact=True
+cat_gu    5.560 ms/47 layers  (118 us/layer, 90 GB/s) allclose=True bitexact=True
+splitN2   7.895 ms/47 layers  (168 us/layer, 63 GB/s) allclose=True bitexact=True
+splitN4   11.143 ms/47 layers  (237 us/layer, 45 GB/s) allclose=True bitexact=True
+batched6  7.736 ms/47 layers  (165 us/layer, 64 GB/s) allclose=True bitexact=True
+up-only 2.5476625189185143
+[transformers] The tokenizer you are loading from '/Users/redfuchs/.cache/huggingface/hub/models--RecursiveSI--flint-int4/snapshots/3b93f9053b530488405ae9fca51d4900d6ce21f0' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+base     ctx256 21.29 ms/tok = 47.0 tok/s
+base     ctx2048 20.79 ms/tok = 48.1 tok/s
+base     parity(4x200 greedy) vs base: [True, True, True, True]
+zcomb    ctx256 23.28 ms/tok = 43.0 tok/s
+zcomb    ctx2048 21.31 ms/tok = 46.9 tok/s
+zcomb    parity(4x200 greedy) vs base: [False, False, False, False]
+zswiglu  ctx256 23.81 ms/tok = 42.0 tok/s
+zswiglu  ctx2048 24.09 ms/tok = 41.5 tok/s
+zswiglu  parity(4x200 greedy) vs base: [False, True, False, False]
+zboth    ctx256 21.80 ms/tok = 45.9 tok/s
+zboth    ctx2048 21.80 ms/tok = 45.9 tok/s
+zboth    parity(4x200 greedy) vs base: [False, False, False, False]
+[transformers] The tokenizer you are loading from '/Users/redfuchs/.cache/huggingface/hub/models--RecursiveSI--flint-int4/snapshots/3b93f9053b530488405ae9fca51d4900d6ce21f0' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+base     ctx256 22.24 ms/tok = 45.0 tok/s
+base     ctx2048 20.56 ms/tok = 48.6 tok/s
+base     parity(4x200 greedy) vs base: [True, True, True, True]
+Traceback (most recent call last):
+  File "/Users/redfuchs/Projects/zunder/ref/moe/e2e.py", line 67, in <module>
+    r=[run(ctx,60)[1] for _ in range(3)]
+       ~~~^^^^^^^^
+  File "/Users/redfuchs/Projects/zunder/ref/moe/e2e.py", line 58, in run
+    for i in range(0,ctx,512): mx.eval(model(mx.array([p[i:min(i+512,ctx)]]),cache=c))
+                                       ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/redfuchs/.venvs/zunder-zmlx/lib/python3.13/site-packages/mlx_lm/models/flint.py", line 248, in __call__
+    out = self.model(inputs, cache, input_embeddings)
+  File "/Users/redfuchs/.venvs/zunder-zmlx/lib/python3.13/site-packages/mlx_lm/models/flint.py", line 228, in __call__
+    h = layer(h, mask, c)
+  File "/Users/redfuchs/.venvs/zunder-zmlx/lib/python3.13/site-packages/mlx_lm/models/flint.py", line 185, in __call__
+    return h + self.mlp(self.post_attention_layernorm(h))
+               ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/redfuchs/Projects/zunder/ref/moe/e2e.py", line 25, in f
+    if x.shape[1]>1: return orig_moe(self,x)
+                            ~~~~~~~~^^^^^^^^
+  File "/Users/redfuchs/.venvs/zunder-zmlx/lib/python3.13/site-packages/mlx_lm/models/flint.py", line 154, in __call__
+    y = self.switch_mlp(x, inds)
+  File "/Users/redfuchs/Projects/zunder/ref/moe/e2e.py", line 34, in f
+    if inds.size>=64: return orig_glu(self,x,inds)
+                             ~~~~~~~~^^^^^^^^^^^^^
+  File "/Users/redfuchs/.venvs/zunder-zmlx/lib/python3.13/site-packages/mlx_lm/models/switch_layers.py", line 209, in __call__
+    x_up = self.up_proj(x, idx, sorted_indices=do_sort)
+  File "/Users/redfuchs/.venvs/zunder-zmlx/lib/python3.13/site-packages/mlx_lm/models/switch_layers.py", line 94, in __call__
+    x = mx.gather_qmm(
+        x,
+    ...<9 lines>...
+        sorted_indices=sorted_indices,
+    )
+ValueError: [gather_qmm] The weight matrix should be uint32 but received float32
+ALLDONE
