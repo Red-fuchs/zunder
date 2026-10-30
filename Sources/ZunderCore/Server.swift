@@ -158,7 +158,14 @@ public final class Server {
 
       try eng.ensureLoaded()
       let ids = try eng.prompt(messages: norm(req["messages"] as? [JSON] ?? []), tools: tools.isEmpty ? nil : tools)
-      let tag = useGrammar ? try eng.fmt.structuralTag(tools: tools, GrammarOpts(required: required, think: think, parallel: (req["parallel_tool_calls"] as? Bool) ?? true)) : nil
+      if ProcessInfo.processInfo.environment["ZUNDER_LOG_PROMPT"] != nil { eng.log("prompt tail: " + String(eng.tok.decode(tokenIds: Array(ids.suffix(40)), skipSpecialTokens: false).debugDescription)) }
+      // response_format json_schema (no tools): constrain the whole output to the schema
+      var rfSchema: String?
+      if tools.isEmpty, (req["grammar"] as? String) != "none", let rf = req["response_format"] as? JSON, rf["type"] as? String == "json_schema" {
+        guard let sc = (rf["json_schema"] as? JSON)?["schema"] else { throw ZError("response_format.json_schema.schema missing") }
+        rfSchema = String(decoding: jdump(sc), as: UTF8.self)
+      }
+      let tag = try rfSchema ?? (useGrammar ? eng.fmt.structuralTag(tools: tools, GrammarOpts(required: required, think: think, parallel: (req["parallel_tool_calls"] as? Bool) ?? true)) : nil)
       let parser = eng.fmt.parser(tools: tools.isEmpty ? nil : tools)
       var detok = Detok(eng.tok)
       var calls = 0, reasoning = "", content = "", toolCalls: [JSON] = []
@@ -190,7 +197,7 @@ public final class Server {
       }
       nonisolated(unsafe) var gone = false
       c.stateUpdateHandler = { if case .cancelled = $0 { gone = true } else if case .failed = $0 { gone = true } }
-      let out = try eng.generate(ids: ids, tag: tag, params: p, maxTokens: maxTok) { t in
+      let out = try eng.generate(ids: ids, tag: tag, schema: rfSchema != nil, params: p, maxTokens: maxTok) { t in
         emit(parser.feed(detok.push(t)))
         return !gone
       }

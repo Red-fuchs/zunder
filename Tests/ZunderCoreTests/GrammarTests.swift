@@ -19,7 +19,7 @@ final class GrammarTests: XCTestCase {
     Task {
       tok = try await loadTokenizer(root.appendingPathComponent("fixtures/flint-tok"))
       let stop = Set([150001, 150003, 150005, 150018])
-      kit = try GrammarKit(tok: tok, eos: tok.convertTokenToId("<|end_of_text|>")!, stop: stop)
+      kit = try GrammarKit(tok: tok, eos: tok.convertTokenToId("<|end_of_text|>")!, stop: stop, dir: root.appendingPathComponent("fixtures/flint-tok"))
       tag = try GLM47().structuralTag(tools: tools)
       sem.signal()
     }
@@ -36,6 +36,20 @@ final class GrammarTests: XCTestCase {
       try g.commit(id)
     }
     return nil
+  }
+
+  /// response_format json_schema via llguidance: non-ASCII content and enum accepted, invented value / key rejected
+  func testSchemaLlg() throws {
+    let sch = #"{"type":"object","properties":{"art":{"type":"string","enum":["Übergang","Kampf"]},"was":{"type":"string"}},"required":["art","was"],"additionalProperties":false}"#
+    func rej(_ t: String) throws -> Int? {
+      let (g, _) = try Self.kit.gate(tag: sch, schema: true)
+      defer { Self.kit.done(g, tag: sch) }
+      for (i, id) in Self.tok.encode(text: t, addSpecialTokens: false).enumerated() { if try !g.allows(id) { return i }; try g.commit(id) }
+      return nil
+    }
+    XCTAssertNil(try rej(#"{"art":"Übergang","was":"Räuber Müller schlich über die Brücke"}"#))
+    XCTAssertNotNil(try rej(#"{"art":"Flucht""#))
+    XCTAssertNotNil(try rej(#"{"wer":"x""#))
   }
 
   func testVocab() {

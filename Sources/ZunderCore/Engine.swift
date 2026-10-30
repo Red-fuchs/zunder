@@ -28,6 +28,7 @@ public final class Engine {
   var ctx: ModelContext?
   var kit: GrammarKit?
   let stop: Set<Int>, eos: Int
+  let vocabSize: Int?
 
   public var loaded: Bool { ctx != nil }
 
@@ -40,6 +41,7 @@ public final class Engine {
     self.lease = lease
     let cfg = (try? JSONSerialization.jsonObject(with: Data(contentsOf: dir.appendingPathComponent("config.json")))) as? JSON ?? [:]
     modelType = cfg["model_type"] as? String ?? ""
+    vocabSize = cfg["vocab_size"] as? Int
     fmt = toolFormat(modelType: modelType)
     var s = Set<Int>()
     for f in ["config.json", "generation_config.json"] {
@@ -66,7 +68,7 @@ public final class Engine {
     let sem = DispatchSemaphore(value: 0)
     Task { do { res = .success(try await loadContext(d)) } catch { res = .failure(error) }; sem.signal() }
     sem.wait()
-    do { let c = try res.get(); kit = try GrammarKit(tok: tok, eos: eos, stop: stop); ctx = c } catch { kit = nil; lease?.release(); throw error }
+    do { let c = try res.get(); kit = try GrammarKit(tok: tok, eos: eos, stop: stop, dir: dir, logitDim: vocabSize); ctx = c } catch { kit = nil; lease?.release(); throw error }
     log(String(format: "model loaded %@ (%.1f s)", id, Date().timeIntervalSince(t)))
     lastUse = Date()
   }
@@ -85,14 +87,14 @@ public final class Engine {
 
   public struct Out { public var tokens: [Int]; public var finish: String; public var stats: GenStats }
 
-  /// `tag` = structural-tag grammar (nil = unconstrained). `onToken` returns false to cancel.
-  public func generate(ids: [Int], tag: String?, params: SampleParams, maxTokens: Int, onToken: (Int) -> Bool) throws -> Out {
+  /// `tag` = structural-tag grammar, or JSON-schema source if `schema` (nil = unconstrained). `onToken` returns false to cancel.
+  public func generate(ids: [Int], tag: String?, schema: Bool = false, params: SampleParams, maxTokens: Int, onToken: (Int) -> Bool) throws -> Out {
     try ensureLoaded()
     guard let ctx, let kit else { throw ZError("not loaded") }
     var st = GenStats()
     st.promptTok = ids.count
     var gate: Gate?
-    if let tag { let (g, c) = try kit.gate(tag: tag); gate = g; st.compileS = c }
+    if let tag { let (g, c) = try kit.gate(tag: tag, schema: schema); gate = g; st.compileS = c }
     defer { if let g = gate, let tag { kit.done(g, tag: tag) } }
 
     let cache = try ctx.model.newCache(parameters: nil)

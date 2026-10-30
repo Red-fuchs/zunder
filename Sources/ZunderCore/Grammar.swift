@@ -8,9 +8,14 @@ public final class GrammarKit {
   public let gtok: GrammarTokenizer
   public let eos: Int
   public let stop: Set<Int>
-  var cache: [String: GrammarConstraint] = [:]
+  var cache: [String: any Constraint] = [:]
+  var llg: LlgTok?
+  let dir: URL?, logitDim: Int?
+  /// JSON-schema backend: llguidance (default) or xgrammar (ZUNDER_SCHEMA_BACKEND=xgrammar)
+  let useLlg = ProcessInfo.processInfo.environment["ZUNDER_SCHEMA_BACKEND"] != "xgrammar"
 
-  public init(tok: any MLXLMCommon.Tokenizer, eos: Int, stop: Set<Int>) throws {
+  public init(tok: any MLXLMCommon.Tokenizer, eos: Int, stop: Set<Int>, dir: URL? = nil, logitDim: Int? = nil) throws {
+    self.dir = dir; self.logitDim = logitDim
     let v = TokenizerVocabExtractor.extractForGrammar(from: tok)
     gtok = try GrammarTokenizer(vocab: v.vocab, vocabType: v.vocabType, eosTokenId: Int32(eos))
     self.eos = eos; self.stop = stop.union([eos])
@@ -19,33 +24,40 @@ public final class GrammarKit {
   public var vocab: Int { gtok.vocabSize }
 
   /// Fresh-state matcher for `tag`; give it back with `release` so the compile is reused.
-  public func take(_ tag: String) throws -> (GrammarConstraint, compile: Double) {
-    if let c = cache.removeValue(forKey: tag) { return (c, 0) }
+  func take(_ tag: String, schema: Bool = false) throws -> (any Constraint, key: String, compile: Double) {
+    let k = (schema ? (useLlg ? "L" : "S") : "T") + tag
+    if let c = cache.removeValue(forKey: k) { return (c, k, 0) }
     let t = Date()
-    let c = try GrammarConstraint(tokenizer: gtok, structuralTag: tag)
-    return (c, Date().timeIntervalSince(t))
+    let c: any Constraint
+    if schema && useLlg {
+      if llg == nil {
+        guard let d = dir, let j = try? String(contentsOf: d.appendingPathComponent("tokenizer.json"), encoding: .utf8) else { throw ZError("llguidance needs tokenizer.json") }
+        llg = try LlgTok(json: j, vocab: max(vocab, logitDim ?? 0), eos: eos, extra: Array(stop))
+      }
+      c = try LlgCon(tok: llg!, schema: tag)
+    } else if schema { c = try GrammarConstraint(tokenizer: gtok, jsonSchema: tag) }
+    else { c = try GrammarConstraint(tokenizer: gtok, structuralTag: tag) }
+    return (c, k, Date().timeIntervalSince(t))
   }
-  public func release(_ c: GrammarConstraint, tag: String, committed: Int) {
-    if committed > 0 { do { try c.rollback(Int32(committed)) } catch { FileHandle.standardError.write(Data("grammar rollback failed (matcher dropped): \(error)\n".utf8)); return } }
-    cache[tag] = c
+  func release(_ c: any Constraint, key: String, committed: Int) {
+    if committed > 0 { do { try c.rollback(committed) } catch { FileHandle.standardError.write(Data("grammar rollback failed (matcher dropped): \(error)\n".utf8)); return } }
+    cache[key] = c
   }
   public func clear() { cache = [:] }
 }
 
 /// Per-request mask state: wraps a matcher, lets every stop token through when the grammar allows EOS.
 public final class Gate {
-  let c: GrammarConstraint, kit: GrammarKit
+  let c: any Constraint, kit: GrammarKit, key: String
   public private(set) var committed = 0
   public var maskS = 0.0
   var shifts = MLXArray(Array(0 ..< 32).map { Int32($0) })
-  init(_ c: GrammarConstraint, kit: GrammarKit) { self.c = c; self.kit = kit }
+  init(_ c: any Constraint, kit: GrammarKit, key: String) { self.c = c; self.kit = kit; self.key = key }
 
   /// Additive-free mask: logits [V] -> logits with disallowed tokens at -inf.
   public func apply(_ logits: MLXArray) throws -> MLXArray {
     let t = Date(); defer { maskS += Date().timeIntervalSince(t) }
-    let m = try c.computeMask()
-    if !m.needsApply { return logits }
-    var w = m.mask
+    guard var w = try c.mask() else { return logits }
     let e = kit.eos
     if !w.contains(where: { $0 != 0 }) { throw ZError("grammar dead end: no token allowed") }
     if (w[e >> 5] >> Int32(e & 31)) & 1 == 1 { for s in kit.stop { w[s >> 5] |= Int32(truncatingIfNeeded: 1 << (s & 31)) } }
@@ -55,22 +67,28 @@ public final class Gate {
 
   /// is `id` currently sampleable (stop tokens included)?
   public func allows(_ id: Int) throws -> Bool {
-    let m = try c.computeMask()
-    if !m.needsApply { return true }
-    func bit(_ i: Int) -> Bool { (m.mask[i >> 5] >> Int32(i & 31)) & 1 == 1 }
+    guard let m = try c.mask() else { return true }
+    func bit(_ i: Int) -> Bool { (m[i >> 5] >> Int32(i & 31)) & 1 == 1 }
     return bit(id) || (kit.stop.contains(id) && bit(kit.eos))
   }
 
   public func commit(_ id: Int) throws {
     let t = Date(); defer { maskS += Date().timeIntervalSince(t) }
-    let r = try c.commitToken(Int32(id)); committed += 1 + r.tokens.count
+    committed += try c.commit(id)
   }
 }
 
+extension GrammarConstraint: Constraint {
+  func mask() throws -> [Int32]? { let m = try computeMask(); return m.needsApply ? m.mask : nil }
+  func commit(_ id: Int) throws -> Int { 1 + (try commitToken(Int32(id))).tokens.count }
+  func rollback(_ n: Int) throws { try rollback(Int32(n)) }
+}
+
 extension GrammarKit {
-  public func gate(tag: String) throws -> (Gate, compile: Double) {
-    let (c, t) = try take(tag)
-    return (Gate(c, kit: self), t)
+  /// `schema`: `tag` is a JSON-schema source (response_format) instead of a structural tag.
+  public func gate(tag: String, schema: Bool = false) throws -> (Gate, compile: Double) {
+    let (c, k, t) = try take(tag, schema: schema)
+    return (Gate(c, kit: self, key: k), t)
   }
-  public func done(_ g: Gate, tag: String) { release(g.c, tag: tag, committed: g.committed) }
+  public func done(_ g: Gate, tag: String) { release(g.c, key: g.key, committed: g.committed) }
 }
