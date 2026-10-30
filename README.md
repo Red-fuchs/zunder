@@ -16,5 +16,13 @@ Local Swift MLX inference server for agents. OpenAI-compatible (`/v1/chat/comple
 - Request extras: `"grammar":"none"` (no constraint), `"think":false` (grammar bans `<think>`), `tool_choice` auto|none|required|{function}, `parallel_tool_calls:false` (with required).
 - Tool formats: `ToolFormat` protocol, `GLM47` for flint/GLM4 (`Sources/ZunderCore/ToolFormat.swift`); Qwen/Gemma/Hermes later.
 
+### Raw grammar (`response_format` lark / regex)
+
+llguidance constrains the whole output (or only the answer after the think block). Not combinable with `tools` (400); invalid grammar -> 400 with the llguidance error.
+`scope`: `all` (default) or `after_think` (native think block stays free, grammar starts after `</think>`; no effect with `"think":false`). `"type":"regex","regex":"..."` works the same way. Compiled grammars are cached.
+
+    curl -s localhost:$PORT/v1/chat/completions -H 'content-type: application/json' -d "$(jq -n --rawfile g ~/Claude-Workspace/think-grammar/skeleton.lark \
+      '{messages:[{role:"user",content:"Wie viel ist 17*23?"}],max_tokens:1500,response_format:{type:"lark",lark:$g,scope:"all"}}')"
+
 Tests: `swift test` (needs `fixtures/tiny-flint` = tiny-random/flint, `fixtures/flint-tok` = flint-int4 tokenizer/config files, and
 `ref/out/tiny.safetensors` from `ref/dump_logits.py` in a venv with mlx-lm main). Smoke: `scripts/smoke.sh` (server + grammar-forced tool call on tiny-random/flint).

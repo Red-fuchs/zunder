@@ -89,16 +89,27 @@ public final class Engine {
     try tok.applyChatTemplate(messages: messages.map(sendable), tools: tools?.map(sendable), additionalContext: nil)
   }
 
+  /// compile (and cache) a lark/regex grammar up front so errors surface as 400 before any output
+  public func precompile(_ src: String, lang: String) throws {
+    try ensureLoaded()
+    guard let kit else { throw ZError("not loaded") }
+    let (g, _) = try kit.gate(tag: src, lang: lang)
+    kit.done(g, tag: src)
+  }
+
+  /// first of the known end-of-thought markers that is a single token
+  public func thinkEnd() -> Int? { ["</think>", "<channel|>", "<end_of_thought>"].lazy.compactMap { self.tok.convertTokenToId($0) }.first }
+
   public struct Out { public var tokens: [Int]; public var finish: String; public var stats: GenStats }
 
   /// `tag` = structural-tag grammar, or JSON-schema source if `schema` (nil = unconstrained). `onToken` returns false to cancel.
-  public func generate(ids: [Int], tag: String?, schema: Bool = false, params: SampleParams, maxTokens: Int, onToken: (Int) -> Bool) throws -> Out {
+  public func generate(ids: [Int], tag: String?, schema: Bool = false, lang: String? = nil, after: Int? = nil, params: SampleParams, maxTokens: Int, onToken: (Int) -> Bool) throws -> Out {
     try ensureLoaded()
     guard let ctx, let kit else { throw ZError("not loaded") }
     var st = GenStats()
     st.promptTok = ids.count
     var gate: Gate?
-    if let tag { let (g, c) = try kit.gate(tag: tag, schema: schema); gate = g; st.compileS = c }
+    if let tag { let (g, c) = try kit.gate(tag: tag, schema: schema, lang: lang, after: after); gate = g; st.compileS = c }
     defer { if let g = gate, let tag { kit.done(g, tag: tag) } }
 
     let cache = try ctx.model.newCache(parameters: nil)

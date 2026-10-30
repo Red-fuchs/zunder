@@ -165,6 +165,20 @@ public final class Server {
         guard let sc = (rf["json_schema"] as? JSON)?["schema"] else { throw ZError("response_format.json_schema.schema missing") }
         rfSchema = String(decoding: jdump(sc), as: UTF8.self)
       }
+      // response_format lark|regex (llguidance): whole output, or only after the think block
+      var rfLang: String?, after: Int?
+      if let rf = req["response_format"] as? JSON, let ty = rf["type"] as? String, ty == "lark" || ty == "regex" {
+        guard ((req["tools"] as? [JSON]) ?? []).isEmpty else { throw BadRequest("response_format \(ty) cannot be combined with tools") }
+        guard let src = rf[ty] as? String, !src.isEmpty else { throw BadRequest("response_format.\(ty) missing") }
+        let scope = rf["scope"] as? String ?? "all"
+        guard scope == "all" || scope == "after_think" else { throw BadRequest("response_format.scope must be all|after_think") }
+        try eng.precompile(src, lang: ty)
+        if scope == "after_think" && think {
+          guard let t = eng.thinkEnd() else { throw BadRequest("scope after_think: no end-of-thought token in this tokenizer") }
+          after = t
+        }
+        rfLang = ty; rfSchema = src
+      }
       let tag = try rfSchema ?? (useGrammar ? eng.fmt.structuralTag(tools: tools, GrammarOpts(required: required, think: think, parallel: (req["parallel_tool_calls"] as? Bool) ?? true)) : nil)
       let parser = eng.fmt.parser(tools: tools.isEmpty ? nil : tools)
       var detok = Detok(eng.tok)
@@ -197,7 +211,7 @@ public final class Server {
       }
       nonisolated(unsafe) var gone = false
       c.stateUpdateHandler = { if case .cancelled = $0 { gone = true } else if case .failed = $0 { gone = true } }
-      let out = try eng.generate(ids: ids, tag: tag, schema: rfSchema != nil, params: p, maxTokens: maxTok) { t in
+      let out = try eng.generate(ids: ids, tag: tag, schema: rfSchema != nil && rfLang == nil, lang: rfLang, after: after, params: p, maxTokens: maxTok) { t in
         emit(parser.feed(detok.push(t)))
         return !gone
       }
@@ -218,6 +232,6 @@ public final class Server {
           "choices": [["index": 0, "message": msg, "finish_reason": finish] as JSON], "usage": usage,
           "timings": ["prefill_tps": out.stats.prefillTps, "decode_tps": out.stats.decTps, "mask_us_per_token": out.stats.maskUs]])
       }
-    } catch { fail(500, "\(error)") }
+    } catch let e as BadRequest { fail(400, e.description) } catch { fail(500, "\(error)") }
   }
 }

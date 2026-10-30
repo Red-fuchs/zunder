@@ -9,6 +9,9 @@ protocol Constraint: AnyObject {
   func rollback(_ n: Int) throws
 }
 
+/// client error -> HTTP 400
+public struct BadRequest: Error, CustomStringConvertible { public let description: String; public init(_ s: String) { description = s } }
+
 public final class LlgTok {
   let p: OpaquePointer
   init(json: String, vocab: Int, eos: Int, extra: [Int]) throws {
@@ -31,12 +34,12 @@ public final class LlgTok {
 
 final class LlgCon: Constraint {
   let m: OpaquePointer, words: Int
-  init(tok: LlgTok, schema: String) throws {
+  init(tok: LlgTok, kind: String = "json_schema", schema: String) throws {
     var i = LlgConstraintInit()
     llg_constraint_init_set_defaults(&i, tok.p)
     i.log_stderr_level = 0
-    m = llg_new_matcher(&i, "json_schema", schema)
-    if llg_matcher_is_error(m) { let e = String(cString: llg_matcher_get_error(m)); llg_free_matcher(m); throw ZError("llguidance schema: \(e)") }
+    m = llg_new_matcher(&i, kind, schema)
+    if llg_matcher_is_error(m) { let e = String(cString: llg_matcher_get_error(m)); llg_free_matcher(m); throw kind == "json_schema" ? ZError("llguidance schema: \(e)") : BadRequest("llguidance \(kind): \(e)") }
     words = llg_matcher_get_mask_byte_size(m) / 4
   }
   deinit { llg_free_matcher(m) }

@@ -1,4 +1,5 @@
 import XCTest
+import MLX
 import MLXLMCommon
 @testable import ZunderCore
 
@@ -50,6 +51,60 @@ final class GrammarTests: XCTestCase {
     XCTAssertNil(try rej(#"{"art":"Übergang","was":"Räuber Müller schlich über die Brücke"}"#))
     XCTAssertNotNil(try rej(#"{"art":"Flucht""#))
     XCTAssertNotNil(try rej(#"{"wer":"x""#))
+  }
+
+  // MARK: response_format lark / regex (llguidance)
+  static let lark = #"start: "ZIEL: " /[a-z]{1,5}/ "\n" "ANTWORT: " /[0-9]{1,3}/ "\n""#
+
+  func larkReject(_ t: String, lang: String = "lark", src: String = GrammarTests.lark) throws -> Int? {
+    let (g, _) = try Self.kit.gate(tag: src, lang: lang)
+    defer { Self.kit.done(g, tag: src) }
+    for (i, id) in Self.tok.encode(text: t, addSpecialTokens: false).enumerated() { if try !g.allows(id) { return i }; try g.commit(id) }
+    return nil
+  }
+
+  func testLarkAcceptsAndRejects() throws {
+    XCTAssertNil(try larkReject("ZIEL: abc\nANTWORT: 42\n"))
+    XCTAssertNotNil(try larkReject("Hallo"))
+    XCTAssertNotNil(try larkReject("ZIEL: abc\nANTWORT: x"))
+    XCTAssertNil(try larkReject("2024-05", lang: "regex", src: "[0-9]{4}-[0-9]{2}"))
+    XCTAssertNotNil(try larkReject("20x", lang: "regex", src: "[0-9]{4}-[0-9]{2}"))
+  }
+
+  func testLarkInvalidIsBadRequest() {
+    XCTAssertThrowsError(try Self.kit.gate(tag: "start: nope(", lang: "lark")) { e in
+      XCTAssertTrue(e is BadRequest, "\(e)"); XCTAssertTrue("\(e)".contains("llguidance"))
+    }
+    XCTAssertThrowsError(try Self.kit.gate(tag: "(", lang: "regex")) { XCTAssertTrue($0 is BadRequest) }
+  }
+
+  /// accepting state precedes EOS: EOS allowed, nothing else; after EOS is consumed the gate is inert (no crash, logits untouched)
+  func testLarkStopAfterEos() throws {
+    let src = #"start: "ab""#
+    let (g, _) = try Self.kit.gate(tag: src, lang: "lark")
+    defer { Self.kit.done(g, tag: src) }
+    for id in Self.tok.encode(text: "ab", addSpecialTokens: false) { try g.commit(id) }
+    XCTAssertTrue(try g.allows(Self.kit.eos))
+    XCTAssertFalse(try g.allows(Self.tok.encode(text: "a", addSpecialTokens: false)[0]))
+    let l = MLXArray(Array(repeating: Float(1), count: Self.kit.vocab))
+    let m = try g.apply(l)
+    XCTAssertEqual((m .> -Float.infinity).sum().item(Int.self), Self.kit.stop.count)
+    try g.commit(Self.kit.eos)
+    try g.commit(Self.kit.eos)   // one step past EOS
+    XCTAssertTrue(try g.allows(7))
+    XCTAssertEqual((try g.apply(l) .> -Float.infinity).sum().item(Int.self), Self.kit.vocab)
+  }
+
+  func testLarkAfterThink() throws {
+    let end = Self.tok.convertTokenToId("</think>")!
+    let (g, _) = try Self.kit.gate(tag: Self.lark, lang: "lark", after: end)
+    defer { Self.kit.done(g, tag: Self.lark) }
+    let free = Self.tok.encode(text: "Überlege frei 123", addSpecialTokens: false)
+    for id in free { XCTAssertTrue(try g.allows(id)); try g.commit(id) }
+    try g.commit(end)
+    XCTAssertEqual(g.committed, 0)
+    XCTAssertFalse(try g.allows(Self.tok.encode(text: "Hallo", addSpecialTokens: false)[0]))
+    for id in Self.tok.encode(text: "ZIEL: ab\nANTWORT: 7\n", addSpecialTokens: false) { XCTAssertTrue(try g.allows(id)); try g.commit(id) }
   }
 
   func testVocab() {
