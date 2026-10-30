@@ -129,8 +129,35 @@ class FlintMoE: Module, UnaryLayer {
     let inds = stopGradient(argPartition(-scores, kth: k - 1, axis: -1)[.ellipsis, ..<k])
     var w = takeAlong(scores, inds, axis: -1)
     w = w / w.sum(axis: -1, keepDims: true)
+    if safe, let (g, u, d) = projs() {
+      let y = experts(x, inds, g, u, d)
+      return weightedExpertSum(y, w).asType(x.dtype) + shared(x)
+    }
     let y = switchMLP(x, inds)
     return weightedExpertSum(y, w).asType(y.dtype) + shared(x)
+  }
+
+  /// fp16 mode: silu(g)*u of outlier tokens exceeds 65504 (layer 45 of flint-int4 -> NaN). Do the product in fp32, rescale each row to max 1 for down_proj, scale back in fp32.
+  var safe = false
+  var cachedProjs: (SwitchLinear, SwitchLinear, SwitchLinear)?
+  func projs() -> (SwitchLinear, SwitchLinear, SwitchLinear)? {
+    if cachedProjs == nil {
+      let c = switchMLP.children()
+      if let g = c["gate_proj"]?.unwrap() as? SwitchLinear, let u = c["up_proj"]?.unwrap() as? SwitchLinear, let d = c["down_proj"]?.unwrap() as? SwitchLinear { cachedProjs = (g, u, d) }
+    }
+    return cachedProjs
+  }
+  func experts(_ x: MLXArray, _ inds: MLXArray, _ gp: SwitchLinear, _ up: SwitchLinear, _ dp: SwitchLinear) -> MLXArray {
+    var xe = MLX.expandedDimensions(x, axes: [-2, -3])
+    let doSort = inds.size >= 64
+    var idx = inds, inv = MLXArray()
+    if doSort { (xe, idx, inv) = gatherSort(x: xe, indices: inds) }
+    let u = up(xe, idx, sortedIndices: doSort).asType(.float32), g = gp(xe, idx, sortedIndices: doSort).asType(.float32)
+    let a = silu(g) * u
+    let sc = maximum(a.abs().max(axis: -1, keepDims: true), 1)
+    var o = dp((a / sc).asType(x.dtype), idx, sortedIndices: doSort).asType(.float32) * sc
+    if doSort { o = scatterUnsort(x: o, invOrder: inv, shape: inds.shape) }
+    return MLX.squeezed(o, axis: -2)
   }
 }
 
@@ -147,9 +174,19 @@ class FlintLayer: Module {
     _inNorm.wrappedValue = RMSNorm(dimensions: a.hiddenSize, eps: a.eps)
     _postNorm.wrappedValue = RMSNorm(dimensions: a.hiddenSize, eps: a.eps)
   }
-  func callAsFunction(_ x: MLXArray, mask: MLXFast.ScaledDotProductAttentionMaskMode, cache: KVCache?) -> MLXArray {
-    let h = x + attn(inNorm(x), mask: mask, cache: cache)
-    return h + mlp(postNorm(h))
+  /// `act` = compute dtype of the branches; x (the residual stream) may be wider (fp32 in fp16 mode: massive activations overflow fp16's 65504)
+  func callAsFunction(_ x: MLXArray, mask: MLXFast.ScaledDotProductAttentionMaskMode, cache: KVCache?, act: DType) -> MLXArray {
+    let ao = attn(inNorm(x).asType(act), mask: mask, cache: cache)
+    let h = x + ao.asType(x.dtype)
+    let pn = postNorm(h).asType(act)
+    let mo = mlp(pn)
+    if ProcessInfo.processInfo.environment["ZUNDER_ACTDBG"] != nil, x.dim(1) > 1 {
+      func m(_ a: MLXArray) -> String { let b = a.asType(.float32).abs(); return "\(b.max().item(Float.self))" }
+      var extra = ""
+      if let moe = mlp as? FlintMoE { extra = " shared=\(m(moe.shared(pn))) moeIn=\(m(pn))" }
+      print("D attn=\(m(ao)) pn=\(m(pn)) mlp=\(m(mo))\(extra)")
+    }
+    return h + mo.asType(x.dtype)
   }
 }
 
@@ -158,6 +195,7 @@ public class FlintInner: Module {
   let layers: [FlintLayer]
   let norm: RMSNorm
   let window: Int, fa: Int?, swa: Int?
+  var res32 = false, act: DType = .bfloat16, dbg = ProcessInfo.processInfo.environment["ZUNDER_ACTDBG"] != nil
   init(_ a: FlintConfiguration) {
     _embed.wrappedValue = Embedding(embeddingCount: a.vocabSize, dimensions: a.hiddenSize)
     layers = (0 ..< a.layers).map { FlintLayer(a, layer: $0) }
@@ -168,11 +206,16 @@ public class FlintInner: Module {
   }
   func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
     var h = embed(inputs)
+    act = h.dtype
+    if res32 { h = h.asType(.float32) }
     let n = h.dim(1)
     let faMask = fa.map { makeAttentionMask(n: n, cache: cache?[$0]) }
     let swaMask = swa.map { makeAttentionMask(n: n, cache: cache?[$0], windowSize: window) }
-    for (i, l) in layers.enumerated() { h = l(h, mask: (l.sliding ? swaMask : faMask)!, cache: cache?[i]) }
-    return norm(h)
+    for (i, l) in layers.enumerated() {
+      h = l(h, mask: (l.sliding ? swaMask : faMask)!, cache: cache?[i], act: act)
+      if dbg, n > 1 { let a = h.asType(.float32).abs(); print("L\(i) max|h|=\(a.max().item(Float.self)) finite=\((a .< Float.infinity).all().item(Bool.self))") }
+    }
+    return norm(h).asType(act)
   }
 }
 

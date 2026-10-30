@@ -3,10 +3,11 @@ import ZunderCore
 
 let usage = """
 usage: zunder <command> [options]
-  serve  --model <dir|hf-id> [--port N] [--idle 600] [--no-lease] [--ram GB] [--preload]   run in foreground
+  serve  --model <dir|hf-id> [--port N] [--idle 600] [--no-lease] [--ram GB] [--preload] [--dtype fp16|bf16|auto]   run in foreground
   start  (same options)    run in background, log ~/.local/state/zunder/zunder.log
   stop | status | log [-f]
-  bench  --model <dir|hf-id> [--tokens 128] [--prompt-tokens 512] [--no-lease] [--ram GB]
+  bench  --model <dir|hf-id> [--tokens 128] [--prompt-tokens 512] [--no-lease] [--ram GB] [--dtype ...]
+  (env ZUNDER_DTYPE; auto = fp16 on M1/M2 GPUs)
 model: local mlx-swift-lm text model dir, or org/name from the HF cache (never downloads).
 """
 
@@ -50,7 +51,7 @@ func makeEngine() async throws -> Engine {
   let dir = try resolveModel(m)
   var lease: GPULease?
   if !flag("--no-lease") { lease = GPULease(label: "zunder " + dir.lastPathComponent, ram: Int(opt("--ram") ?? "") ?? Engine.ramGB(dir)) }
-  return try await Engine(spec: m, lease: lease)
+  return try await Engine(spec: m, lease: lease, dtype: opt("--dtype"))
 }
 
 switch cmd {
@@ -111,20 +112,24 @@ case "bench":
   _ = try eng.generate(ids: ids, tag: tag, params: SampleParams(), maxTokens: 4) { _ in true }   // warm the compile cache
   let g = try eng.generate(ids: ids, tag: tag, params: SampleParams(), maxTokens: nGen) { _ in true }
   print("grammar:       " + g.stats.line)
+  eng.checkFinite = true
+  _ = try eng.generate(ids: ids, tag: nil, params: SampleParams(temp: 0), maxTokens: min(nGen, 48)) { _ in true }
+  print("dtype check: non-finite logit steps = \(eng.nonFinite)")
 case "gen":   // greedy parity dump: --prompts file.json (list of strings) --tokens N --out file.json
   let eng = try await makeEngine()
   let n = Int(opt("--tokens") ?? "") ?? 32
   guard let pf = opt("--prompts"), let po = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: pf)))  as? [String] else { die("--prompts file.json (list of strings)") }
   try eng.ensureLoaded()
   defer { eng.unload() }
+  eng.checkFinite = true
   var res: [[String: Any]] = []
   for p in po {
     let ids = try eng.prompt(messages: [["role": "user", "content": p]], tools: nil)
     var tr: [[String: Any]] = []
-    eng.trace = { tr.append(["ids": $0, "logits": $1]) }
+    eng.trace = { tr.append(["ids": $0, "logits": $1.map { $0.isFinite ? $0 : -1e9 }]) }
     let o = try eng.generate(ids: ids, tag: nil, params: SampleParams(temp: 0), maxTokens: n) { _ in true }
     eng.trace = nil
-    res.append(["prompt": p, "prompt_ids": ids, "tokens": o.tokens, "top8": tr, "stats": o.stats.line])
+    res.append(["prompt": p, "prompt_ids": ids, "tokens": o.tokens, "top8": tr, "stats": o.stats.line, "nonfinite": eng.nonFinite])
     print(o.stats.line)
   }
   try JSONSerialization.data(withJSONObject: res).write(to: URL(fileURLWithPath: opt("--out") ?? "gen.json"))

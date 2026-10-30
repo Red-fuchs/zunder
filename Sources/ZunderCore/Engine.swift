@@ -25,14 +25,18 @@ public final class Engine {
   public var trace: (([Int], [Float]) -> Void)?
   public var log: (String) -> Void = { FileHandle.standardError.write(Data(($0 + "\n").utf8)) }
   public private(set) var lastUse = Date()
+  public var checkFinite = false
+  public var nonFinite = 0
   var ctx: ModelContext?
+  let dtypeArg: String?
   var kit: GrammarKit?
   let stop: Set<Int>, eos: Int
   let vocabSize: Int?
 
   public var loaded: Bool { ctx != nil }
 
-  public init(spec: String, lease: GPULease? = nil) async throws {
+  public init(spec: String, lease: GPULease? = nil, dtype: String? = nil) async throws {
+    dtypeArg = dtype
     let dir = try resolveModel(spec)
     self.dir = dir
     id = FileManager.default.fileExists(atPath: (spec as NSString).expandingTildeInPath) ? dir.lastPathComponent : spec
@@ -63,13 +67,13 @@ public final class Engine {
     lastUse = Date()
     if ctx != nil { return }
     try lease?.acquire(log: log)
-    let t = Date(), d = dir
+    let t = Date(), d = dir, dt = resolveDtype(dtypeArg)
     nonisolated(unsafe) var res: Result<ModelContext, Error> = .failure(ZError("load"))
     let sem = DispatchSemaphore(value: 0)
-    Task { do { res = .success(try await loadContext(d)) } catch { res = .failure(error) }; sem.signal() }
+    Task { do { res = .success(try await loadContext(d, dtype: dt)) } catch { res = .failure(error) }; sem.signal() }
     sem.wait()
     do { let c = try res.get(); kit = try GrammarKit(tok: tok, eos: eos, stop: stop, dir: dir, logitDim: vocabSize); ctx = c } catch { kit = nil; lease?.release(); throw error }
-    log(String(format: "model loaded %@ (%.1f s)", id, Date().timeIntervalSince(t)))
+    log(String(format: "model loaded %@ %@ (%.1f s)", id, dt.rawValue, Date().timeIntervalSince(t)))
     lastUse = Date()
   }
 
@@ -112,6 +116,7 @@ public final class Engine {
     let t1 = Date()
     func step(_ l: MLXArray) throws -> MLXArray {
       var l = l[0, -1, 0...]
+      if checkFinite, !(l.asType(.float32).abs() .< Float.infinity).all().item(Bool.self) { nonFinite += 1 }   // NaN and inf both fail `< inf`
       if let trace { let i = argSort(-l.asType(.float32), axis: -1)[..<8]; let v = takeAlong(l.asType(.float32), i, axis: -1); trace(i.asArray(Int.self), v.asArray(Float.self)) }
       if let gate { l = try gate.apply(l) }
       return sample(l, params)

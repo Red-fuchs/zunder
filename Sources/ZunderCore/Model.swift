@@ -40,7 +40,18 @@ public func resolveModel(_ spec: String) throws -> URL {
   return d
 }
 
-public func loadContext(_ dir: URL) async throws -> ModelContext {
+public func loadContext(_ dir: URL, dtype: ActDtype = resolveDtype(nil)) async throws -> ModelContext {
+  let c = try await loadContextRaw(dir)
+  castParameters(c.model, to: dtype)
+  if let m = c.model as? FlintModel { 
+    let f16 = dtype == .fp16
+    m.model.res32 = f16 && ProcessInfo.processInfo.environment["ZUNDER_RES32"] == "1"   // fp32 residual stream: off, residual max ~60 (not the overflow source)
+    for l in m.model.layers { (l.mlp as? FlintMoE)?.safe = f16 && ProcessInfo.processInfo.environment["ZUNDER_SAFEMOE"] != "0" }
+  }
+  return c
+}
+
+func loadContextRaw(_ dir: URL) async throws -> ModelContext {
   await registerFlint()
   // mlx-swift-lm applies one global (bits, group) to every module with .scales; mixed checkpoints (flint-int4: 8-bit embeddings) need per-tensor bits
   let data = try Data(contentsOf: dir.appendingPathComponent("config.json"))
