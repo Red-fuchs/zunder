@@ -157,7 +157,7 @@ public final class Server {
       let useGrammar = !tools.isEmpty && (req["grammar"] as? String) != "none"
 
       try eng.ensureLoaded()
-      let ids = try eng.prompt(messages: norm(req["messages"] as? [JSON] ?? []), tools: tools.isEmpty ? nil : tools)
+      let ids = try eng.prompt(messages: norm(req["messages"] as? [JSON] ?? []), tools: tools.isEmpty ? nil : tools, thinking: (req["think"] as? Bool) ?? ((req["chat_template_kwargs"] as? JSON)?["enable_thinking"] as? Bool))
       if ProcessInfo.processInfo.environment["ZUNDER_LOG_PROMPT"] != nil { eng.log("prompt tail: " + String(eng.tok.decode(tokenIds: Array(ids.suffix(40)), skipSpecialTokens: false).debugDescription)) }
       // response_format json_schema (no tools): constrain the whole output to the schema
       var rfSchema: String?

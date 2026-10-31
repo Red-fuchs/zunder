@@ -85,8 +85,8 @@ public final class Engine {
     log("model unloaded")
   }
 
-  public func prompt(messages: [JSON], tools: [JSON]?) throws -> [Int] {
-    try tok.applyChatTemplate(messages: messages.map(sendable), tools: tools?.map(sendable), additionalContext: nil)
+  public func prompt(messages: [JSON], tools: [JSON]?, thinking: Bool? = nil) throws -> [Int] {
+    try tok.applyChatTemplate(messages: messages.map(sendable), tools: tools?.map(sendable), additionalContext: thinking.map { ["enable_thinking": $0] })
   }
 
   /// compile (and cache) a lark/regex grammar up front so errors surface as 400 before any output
@@ -97,8 +97,8 @@ public final class Engine {
     kit.done(g, tag: src)
   }
 
-  /// first of the known end-of-thought markers that is a single token
-  public func thinkEnd() -> Int? { ["</think>", "<channel|>", "<end_of_thought>"].lazy.compactMap { self.tok.convertTokenToId($0) }.first }
+  /// first of the known end-of-thought markers that is a single token (unknown strings may map to <unk>, hence the round trip)
+  public func thinkEnd() -> Int? { ["</think>", "<channel|>", "<end_of_thought>"].lazy.compactMap { m in self.tok.convertTokenToId(m).flatMap { self.tok.convertIdToToken($0) == m ? $0 : nil } }.first }
 
   public struct Out { public var tokens: [Int]; public var finish: String; public var stats: GenStats }
 
