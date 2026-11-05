@@ -3,7 +3,14 @@ import MLX
 public struct SampleParams: Sendable {
   public var temp: Float = 1.0, topP: Float = 0.95
   public var topK = 20
+  public var repPen: Float = 1, repCtx = 20   // mlx-lm repetition_penalty / repetition_context_size; 1 = off
   public init(temp: Float = 1.0, topP: Float = 0.95, topK: Int = 20) { self.temp = temp; self.topP = topP; self.topK = topK }
+}
+
+/// mlx-lm make_repetition_penalty: logits of the context tokens are divided by `pen` if >= 0, else multiplied.
+public func repPenalty(_ l: MLXArray, _ toks: MLXArray, _ pen: Float) -> MLXArray {
+  let s = takeAlong(l, toks, axis: -1)
+  return putAlong(l, toks, values: which(s .< 0, s * pen, s / pen), axis: -1)
 }
 
 /// logits [V] (masked entries -inf) -> token id scalar. top-k via partition (k small), top-p on the k survivors.

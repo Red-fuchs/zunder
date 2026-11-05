@@ -152,6 +152,8 @@ public final class Server {
       if let v = (req["temperature"] as? NSNumber)?.floatValue { p.temp = v }
       if let v = (req["top_p"] as? NSNumber)?.floatValue { p.topP = v }
       if let v = (req["top_k"] as? NSNumber)?.intValue { p.topK = v }
+      if let v = (req["repetition_penalty"] as? NSNumber)?.floatValue { guard v > 0 else { throw BadRequest("repetition_penalty must be > 0") }; p.repPen = v }
+      if let v = (req["repetition_context_size"] as? NSNumber)?.intValue { guard v > 0 else { throw BadRequest("repetition_context_size must be > 0") }; p.repCtx = v }
       let maxTok = (req["max_completion_tokens"] as? Int) ?? (req["max_tokens"] as? Int) ?? 4096
       let think = (req["think"] as? Bool) ?? ((req["chat_template_kwargs"] as? JSON)?["enable_thinking"] as? Bool) ?? true
       let useGrammar = !tools.isEmpty && (req["grammar"] as? String) != "none"

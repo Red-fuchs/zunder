@@ -54,9 +54,15 @@ public func loadContext(_ dir: URL, dtype: ActDtype = resolveDtype(nil)) async t
 func loadContextRaw(_ dir: URL) async throws -> ModelContext {
   await registerFlint()
   // mlx-swift-lm applies one global (bits, group) to every module with .scales; mixed checkpoints (flint-int4: 8-bit embeddings) need per-tensor bits
-  let data = try Data(contentsOf: dir.appendingPathComponent("config.json"))
+  var data = try Data(contentsOf: dir.appendingPathComponent("config.json"))
+  // JANG configs carry string metadata inside `quantization` (tied_embedding: "affine_4bit_g64"); mlx-swift-lm's decoder wants dict|bool only
+  var strip = false
+  if var j = try? JSONSerialization.jsonObject(with: data) as? JSON, var q = j["quantization"] as? JSON {
+    for (k, v) in q where !(v is JSON) && !(v is Bool) && !["group_size", "bits", "mode", "quant_method", "linear_class", "quantization_mode"].contains(k) { q[k] = nil; strip = true }
+    if strip { j["quantization"] = q; data = try JSONSerialization.data(withJSONObject: j) }
+  }
   let base = try JSONDecoder.json5().decode(BaseConfiguration.self, from: data)
-  guard let pl = base.perLayerQuantization, let inferred = try inferQuantization(dir: dir, base: pl) else {
+  guard let pl = base.perLayerQuantization, let inferred = try inferQuantization(dir: dir, base: pl) ?? (strip ? pl : nil) else {
     return try await LLMModelFactory.shared.load(from: dir, using: TokLoader())
   }
   let model = try await LLMTypeRegistry.shared.createModel(configuration: data, modelType: base.modelType)

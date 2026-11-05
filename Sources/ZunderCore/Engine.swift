@@ -125,12 +125,16 @@ public final class Engine {
 
     var out: [Int] = [], finish = "length"
     let t1 = Date()
+    var hist = params.repPen != 1 ? MLXArray(ids.suffix(params.repCtx).map { Int32($0) }) : nil   // last repCtx tokens (prompt + sampled), kept lazy on device
     func step(_ l: MLXArray) throws -> MLXArray {
       var l = l[0, -1, 0...]
       if checkFinite, !(l.asType(.float32).abs() .< Float.infinity).all().item(Bool.self) { nonFinite += 1 }   // NaN and inf both fail `< inf`
       if let trace { let i = argSort(-l.asType(.float32), axis: -1)[..<8]; let v = takeAlong(l.asType(.float32), i, axis: -1); trace(i.asArray(Int.self), v.asArray(Float.self)) }
+      if let h = hist { l = repPenalty(l, h, params.repPen) }   // before the grammar mask, which stays authoritative
       if let gate { l = try gate.apply(l) }
-      return sample(l, params)
+      let y = sample(l, params)
+      if let h = hist { hist = concatenated([h, y.reshaped(1).asType(.int32)])[(-params.repCtx)...] }
+      return y
     }
     func fwd(_ y: MLXArray) -> MLXArray { ctx.model(y.reshaped(1, 1), cache: cache) }
     var y = try step(logits)
