@@ -18,7 +18,7 @@ args.removeFirst()
 func opt(_ k: String) -> String? { args.firstIndex(of: k).flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil } }
 func flag(_ k: String) -> Bool { args.contains(k) }
 
-let state = URL(fileURLWithPath: NSHomeDirectory() + "/.local/state/zunder")
+let state = URL(fileURLWithPath: ProcessInfo.processInfo.environment["ZUNDER_STATE"] ?? NSHomeDirectory() + "/.local/state/zunder")   // ZUNDER_STATE = separate pid/port/log dir for a 2nd instance
 try? FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
 let pidFile = state.appendingPathComponent("pid"), logFile = state.appendingPathComponent("zunder.log"), portFile = state.appendingPathComponent("port")
 func run(_ exe: String, _ a: [String]) -> String {
